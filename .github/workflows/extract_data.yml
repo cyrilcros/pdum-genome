@@ -14,17 +14,17 @@ jobs:
         uses: actions/checkout@v3
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0  # Fetch full history
+          fetch-depth: 0
 
       - name: Extract changed line
         id: extract
         run: |
-          # Fetch the base ref separately
           git fetch origin ${{ github.base_ref }}
-
-          # Now use git diff with the fetched base ref
           DIFF=$(git diff origin/${{ github.base_ref }} ${{ github.event.pull_request.head.sha }})
-          ADDED_LINE=$(echo "$DIFF" | grep '^+[^#]' | sed 's/^+//')
+
+          # Filter for the actual added GFF3 line
+          ADDED_LINE=$(echo "$DIFF" | grep '^+[^+#]' | head -n 1 | sed 's/^+//')
+
           echo "added_line=$ADDED_LINE" >> $GITHUB_OUTPUT
 
       - name: Extract gene_id and new attributes
