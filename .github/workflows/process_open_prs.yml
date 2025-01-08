@@ -1,0 +1,85 @@
+name: Process GFF3 Changes in Open PRs (Manual)
+
+on:
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  process-prs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get open PRs with matching titles
+        id: get-prs
+        run: |
+          PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls?state=open" | jq '.[] | select(.title | test("^Annotate", "i"))')
+
+          # Extract PR numbers and head SHAs
+          PR_NUMBERS=$(echo "$PR_DATA" | jq -r '.number' | tr '\n' ' ')
+          PR_HEAD_SHAS=$(echo "$PR_DATA" | jq -r '.head.sha' | tr '\n' ' ')
+          
+          echo "pr_numbers=$PR_NUMBERS" >> $GITHUB_OUTPUT
+          echo "pr_head_shas=$PR_HEAD_SHAS" >> $GITHUB_OUTPUT
+
+      - name: Process each PR
+        if: steps.get-prs.outputs.pr_numbers != ''
+        run: |
+          PR_NUMBERS="${{ steps.get-prs.outputs.pr_numbers }}"
+          PR_HEAD_SHAS="${{ steps.get-prs.outputs.pr_head_shas }}"
+          
+          # Convert space-separated strings to arrays
+          IFS=' ' read -ra PR_NUM_ARRAY <<< "$PR_NUMBERS"
+          IFS=' ' read -ra PR_HEAD_SHA_ARRAY <<< "$PR_HEAD_SHAS"
+
+          # Loop through PRs
+          for i in "${!PR_NUM_ARRAY[@]}"; do
+            PR_NUM="${PR_NUM_ARRAY[$i]}"
+            PR_HEAD_SHA="${PR_HEAD_SHA_ARRAY[$i]}"
+
+            echo "Processing PR #$PR_NUM (SHA: $PR_HEAD_SHA)"
+
+            # Checkout PR code
+            git fetch origin pull/$PR_NUM/head:$PR_NUM
+            git checkout $PR_NUM
+
+            # Extract changed line (assuming the logic from the previous workflow)
+            DIFF=$(git diff origin/${{ github.event.repository.default_branch }} $PR_HEAD_SHA)
+            ADDED_LINE=$(echo "$DIFF" | grep '^+[^+#]' | head -n 1 | sed 's/^+//')
+
+            # Extract gene_id and name (with error handling)
+            GENE_ID=$(echo "$ADDED_LINE" | awk -F'\t' '{split($9, a, ";"); for(i in a) { if (a[i] ~ /gene_id=/) { sub(/gene_id=/, "", a[i]); print a[i]; } }}')
+            NAME=$(echo "$ADDED_LINE" | awk -F'\t' '{split($9, a, ";"); for(i in a) { if (a[i] ~ /name=/) { sub(/name=/, "", a[i]); print a[i]; } }}')
+
+            if [ -z "$NAME" ]; then
+              echo "Error: 'name' attribute is missing in PR #$PR_NUM. Skipping."
+              continue # Skip to the next PR
+            fi
+
+            # Get GitHub username 
+            USERNAME=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/user" | jq -r '.login')
+
+            # Extract annotator or use GitHub username
+            ANNOTATOR=$(echo "$ADDED_LINE" | awk -F'\t' '{split($9, a, ";"); for(i in a) { if (a[i] ~ /annotator=/) { sub(/annotator=/, "", a[i]); print a[i]; } }}')
+            if [ -z "$ANNOTATOR" ]; then
+              ANNOTATOR="$USERNAME"
+            fi
+
+            # Get PR creation date
+            PR_DATE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUM" | jq -r '.created_at')
+
+            # Update gene_alias.tsv
+            echo -e "$GENE_ID\t$NAME\t$ANNOTATOR\t$PR_DATE" >> gene_alias.tsv
+
+            # Commit and push changes (only if there were changes)
+            if git diff --quiet gene_alias.tsv; then
+                echo "No changes to gene_alias.tsv in PR #$PR_NUM"
+            else
+                git config --global user.email "actions@github.com"
+                git config --global user.name "GitHub Actions"
+                git add gene_alias.tsv
+                git commit -m "Update gene_alias.tsv with data from PR #$PR_NUM"
+                git push origin $PR_NUM
+            fi
+          done
