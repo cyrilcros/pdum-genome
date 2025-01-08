@@ -47,19 +47,19 @@ jobs:
           USERNAME=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/user" | jq -r '.login')
           echo "username=$USERNAME" >> $GITHUB_OUTPUT
-          
+
       - name: Extract annotator or use GitHub username
         id: annotator
         if: steps.attributes.outcome == 'success'
         run: |
           ADDED_LINE="${{ steps.extract.outputs.added_line }}"
           ANNOTATOR=$(echo "$ADDED_LINE" | awk -F'\t' '{split($9, a, ";"); for(i in a) { if (a[i] ~ /annotator=/) { sub(/annotator=/, "", a[i]); print a[i]; } }}')
-          
+
           # Use GitHub username if annotator is missing
           if [ -z "$ANNOTATOR" ]; then
             ANNOTATOR="${{ steps.username.outputs.username }}"
           fi
-          
+
           echo "annotator=$ANNOTATOR" >> $GITHUB_OUTPUT
 
       - name: Get PR creation date
@@ -70,10 +70,20 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.number }}" | jq -r '.created_at')
           echo "pr_date=$PR_DATE" >> $GITHUB_OUTPUT
 
-      - name: Update gene_alias.tsv
+      - name: Check for existing entry and update gene_alias.tsv
         if: steps.attributes.outcome == 'success'
         run: |
-          echo -e "${{ steps.attributes.outputs.gene_id }}\t${{ steps.attributes.outputs.name }}\t${{ steps.annotator.outputs.annotator }}\t${{ steps.pr-date.outputs.pr_date }}" >> gene_alias.tsv
+          GENE_ID="${{ steps.attributes.outputs.gene_id }}"
+          NAME="${{ steps.attributes.outputs.name }}"
+          ANNOTATOR="${{ steps.annotator.outputs.annotator }}"
+          PR_DATE="${{ steps.pr-date.outputs.pr_date }}"
+
+          # Check if the entry already exists (ignoring the date)
+          if grep -q -F "$GENE_ID"$'\t'"$NAME"$'\t'"$ANNOTATOR" gene_alias.tsv; then
+            echo "Entry already exists in gene_alias.tsv. Skipping update."
+          else
+            echo -e "$GENE_ID\t$NAME\t$ANNOTATOR\t$PR_DATE" >> gene_alias.tsv
+          fi
 
       - name: Commit and push changes
         if: steps.attributes.outcome == 'success'

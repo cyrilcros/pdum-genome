@@ -1,7 +1,7 @@
 name: Process GFF3 Changes in Open PRs (Manual)
 
 on:
-  workflow_dispatch: # Allows manual triggering
+  workflow_dispatch:
 
 jobs:
   process-prs:
@@ -14,10 +14,9 @@ jobs:
           PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/pulls?state=open" | jq '.[] | select(.title | test("^Annotate", "i"))')
 
-          # Extract PR numbers and head SHAs
           PR_NUMBERS=$(echo "$PR_DATA" | jq -r '.number' | tr '\n' ' ')
           PR_HEAD_SHAS=$(echo "$PR_DATA" | jq -r '.head.sha' | tr '\n' ' ')
-          
+
           echo "pr_numbers=$PR_NUMBERS" >> $GITHUB_OUTPUT
           echo "pr_head_shas=$PR_HEAD_SHAS" >> $GITHUB_OUTPUT
 
@@ -26,12 +25,10 @@ jobs:
         run: |
           PR_NUMBERS="${{ steps.get-prs.outputs.pr_numbers }}"
           PR_HEAD_SHAS="${{ steps.get-prs.outputs.pr_head_shas }}"
-          
-          # Convert space-separated strings to arrays
+
           IFS=' ' read -ra PR_NUM_ARRAY <<< "$PR_NUMBERS"
           IFS=' ' read -ra PR_HEAD_SHA_ARRAY <<< "$PR_HEAD_SHAS"
 
-          # Loop through PRs
           for i in "${!PR_NUM_ARRAY[@]}"; do
             PR_NUM="${PR_NUM_ARRAY[$i]}"
             PR_HEAD_SHA="${PR_HEAD_SHA_ARRAY[$i]}"
@@ -41,8 +38,11 @@ jobs:
             # Checkout PR code
             git fetch origin pull/$PR_NUM/head:$PR_NUM
             git checkout $PR_NUM
+            
+            # Fetch the base ref separately
+            git fetch origin ${{ github.event.repository.default_branch }}
 
-            # Extract changed line (assuming the logic from the previous workflow)
+            # Extract changed line
             DIFF=$(git diff origin/${{ github.event.repository.default_branch }} $PR_HEAD_SHA)
             ADDED_LINE=$(echo "$DIFF" | grep '^+[^+#]' | head -n 1 | sed 's/^+//')
 
@@ -52,12 +52,12 @@ jobs:
 
             if [ -z "$NAME" ]; then
               echo "Error: 'name' attribute is missing in PR #$PR_NUM. Skipping."
-              continue # Skip to the next PR
+              continue
             fi
 
-            # Get GitHub username 
+            # Get GitHub username
             USERNAME=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/user" | jq -r '.login')
+              "https://api.github.com/user" | jq -r '.login')
 
             # Extract annotator or use GitHub username
             ANNOTATOR=$(echo "$ADDED_LINE" | awk -F'\t' '{split($9, a, ";"); for(i in a) { if (a[i] ~ /annotator=/) { sub(/annotator=/, "", a[i]); print a[i]; } }}')
@@ -69,8 +69,12 @@ jobs:
             PR_DATE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUM" | jq -r '.created_at')
 
-            # Update gene_alias.tsv
-            echo -e "$GENE_ID\t$NAME\t$ANNOTATOR\t$PR_DATE" >> gene_alias.tsv
+            # Check for existing entry and update gene_alias.tsv
+            if grep -q -F "$GENE_ID"$'\t'"$NAME"$'\t'"$ANNOTATOR" gene_alias.tsv; then
+              echo "Entry already exists in gene_alias.tsv. Skipping update for PR #$PR_NUM."
+            else
+              echo -e "$GENE_ID\t$NAME\t$ANNOTATOR\t$PR_DATE" >> gene_alias.tsv
+            fi
 
             # Commit and push changes (only if there were changes)
             if git diff --quiet gene_alias.tsv; then
