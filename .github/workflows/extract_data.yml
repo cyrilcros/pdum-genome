@@ -13,13 +13,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Extract changed line
         id: extract
         run: |
-          DIFF=$(git diff ${{ github.base_ref }} ${{ github.head_ref }})
-          ADDED_LINE=$(echo "$DIFF" | grep '^+[^#]' | sed 's/^+//') # Filter out comment lines
+          # Use the PR's head SHA instead of github.head_ref
+          DIFF=$(git diff ${{ github.base_ref }} ${{ github.event.pull_request.head.sha }})
+          ADDED_LINE=$(echo "$DIFF" | grep '^+[^#]' | sed 's/^+//')
           echo "added_line=$ADDED_LINE" >> $GITHUB_OUTPUT
 
       - name: Extract gene_id and new attributes
