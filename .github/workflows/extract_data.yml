@@ -1,4 +1,4 @@
-name: Extract Data from GFF3 Change
+name: Extract Data from GFF3 Change and Update Alias File
 
 on:
   pull_request:
@@ -21,30 +21,64 @@ jobs:
         run: |
           git fetch origin ${{ github.base_ref }}
           DIFF=$(git diff origin/${{ github.base_ref }} ${{ github.event.pull_request.head.sha }})
-
-          # Filter for the actual added GFF3 line
           ADDED_LINE=$(echo "$DIFF" | grep '^+[^+#]' | head -n 1 | sed 's/^+//')
-
           echo "added_line=$ADDED_LINE" >> $GITHUB_OUTPUT
 
-      - name: Extract gene_id and new attributes
+      - name: Extract gene_id and name
         id: attributes
         run: |
           ADDED_LINE="${{ steps.extract.outputs.added_line }}"
           GENE_ID=$(echo "$ADDED_LINE" | awk -F'\t' '{split($9, a, ";"); for(i in a) { if (a[i] ~ /gene_id=/) { sub(/gene_id=/, "", a[i]); print a[i]; } }}')
+          NAME=$(echo "$ADDED_LINE" | awk -F'\t' '{split($9, a, ";"); for(i in a) { if (a[i] ~ /name=/) { sub(/name=/, "", a[i]); print a[i]; } }}')
 
-          # Get original attributes from base ref
-          FILE_PATH=$(echo "$DIFF" | grep '^---' | sed 's/--- a\///')
-          ORIGINAL_LINE=$(git show origin/${{ github.base_ref }}:$FILE_PATH | awk -v line_num=$(echo "$ADDED_LINE" | cut -f 4) 'NR==line_num')
-          ORIGINAL_ATTRIBUTES=$(echo "$ORIGINAL_LINE" | awk -F'\t' '{print $9}')
-
-          # Find new attributes using comm command
-          NEW_ATTRIBUTES=$(comm -13 <(echo "$ORIGINAL_ATTRIBUTES" | tr ';' '\n' | sort) <(echo "$ADDED_LINE" | cut -f9 | tr ';' '\n' | sort) | tr '\n' ';' | sed 's/;$//')
+          # Check if name is missing
+          if [ -z "$NAME" ]; then
+            echo "Error: 'name' attribute is missing in the GFF3 line."
+            exit 1
+          fi
 
           echo "gene_id=$GENE_ID" >> $GITHUB_OUTPUT
-          echo "new_attributes=$NEW_ATTRIBUTES" >> $GITHUB_OUTPUT
+          echo "name=$NAME" >> $GITHUB_OUTPUT
 
-      - name: Print gene_id and new attributes
+      - name: Get GitHub username
+        id: username
+        if: steps.attributes.outcome == 'success'
         run: |
-          echo "Gene ID: ${{ steps.attributes.outputs.gene_id }}"
-          echo "New Attributes: ${{ steps.attributes.outputs.new_attributes }}"
+          USERNAME=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/user" | jq -r '.login')
+          echo "username=$USERNAME" >> $GITHUB_OUTPUT
+          
+      - name: Extract annotator or use GitHub username
+        id: annotator
+        if: steps.attributes.outcome == 'success'
+        run: |
+          ADDED_LINE="${{ steps.extract.outputs.added_line }}"
+          ANNOTATOR=$(echo "$ADDED_LINE" | awk -F'\t' '{split($9, a, ";"); for(i in a) { if (a[i] ~ /annotator=/) { sub(/annotator=/, "", a[i]); print a[i]; } }}')
+          
+          # Use GitHub username if annotator is missing
+          if [ -z "$ANNOTATOR" ]; then
+            ANNOTATOR="${{ steps.username.outputs.username }}"
+          fi
+          
+          echo "annotator=$ANNOTATOR" >> $GITHUB_OUTPUT
+
+      - name: Get PR creation date
+        id: pr-date
+        if: steps.attributes.outcome == 'success'
+        run: |
+          PR_DATE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.number }}" | jq -r '.created_at')
+          echo "pr_date=$PR_DATE" >> $GITHUB_OUTPUT
+
+      - name: Update gene_alias.tsv
+        if: steps.attributes.outcome == 'success'
+        run: |
+          echo -e "${{ steps.attributes.outputs.gene_id }}\t${{ steps.attributes.outputs.name }}\t${{ steps.annotator.outputs.annotator }}\t${{ steps.pr-date.outputs.pr_date }}" >> gene_alias.tsv
+
+      - name: Commit and push changes
+        if: steps.attributes.outcome == 'success'
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "Update gene_alias.tsv with new entry"
+          branch: ${{ github.head_ref }}
+          file_pattern: gene_alias.tsv
