@@ -70,6 +70,7 @@ jobs:
 
               # Process each added line
               while IFS= read -r ADDED_LINE; do
+                echo "Looking at line: $ADDED_LINE"
                 GENE_ID=$(echo "$ADDED_LINE" | awk -F'\t' '{split($9, a, ";"); for(i in a) { if (a[i] ~ /gene_id=/) { sub(/gene_id=/, "", a[i]); print a[i]; } }}')
                 NAME=$(echo "$ADDED_LINE" | awk -F'\t' '{split($9, a, ";"); for(i in a) { if (a[i] ~ /name=/) { sub(/name=/, "", a[i]); print a[i]; } }}')
 
