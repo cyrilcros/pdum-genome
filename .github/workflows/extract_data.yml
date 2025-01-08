@@ -10,16 +10,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout code (full history)
         uses: actions/checkout@v3
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0  # Fetch full history
 
       - name: Extract changed line
         id: extract
         run: |
-          # Use the PR's head SHA instead of github.head_ref
-          DIFF=$(git diff ${{ github.base_ref }} ${{ github.event.pull_request.head.sha }})
+          # Fetch the base ref separately
+          git fetch origin ${{ github.base_ref }}
+
+          # Now use git diff with the fetched base ref
+          DIFF=$(git diff origin/${{ github.base_ref }} ${{ github.event.pull_request.head.sha }})
           ADDED_LINE=$(echo "$DIFF" | grep '^+[^#]' | sed 's/^+//')
           echo "added_line=$ADDED_LINE" >> $GITHUB_OUTPUT
 
@@ -31,7 +35,7 @@ jobs:
 
           # Get original attributes from base ref
           FILE_PATH=$(echo "$DIFF" | grep '^---' | sed 's/--- a\///')
-          ORIGINAL_LINE=$(git show ${{ github.base_ref }}:$FILE_PATH | awk -v line_num=$(echo "$ADDED_LINE" | cut -f 4) 'NR==line_num')
+          ORIGINAL_LINE=$(git show origin/${{ github.base_ref }}:$FILE_PATH | awk -v line_num=$(echo "$ADDED_LINE" | cut -f 4) 'NR==line_num')
           ORIGINAL_ATTRIBUTES=$(echo "$ORIGINAL_LINE" | awk -F'\t' '{print $9}')
 
           # Find new attributes using comm command
